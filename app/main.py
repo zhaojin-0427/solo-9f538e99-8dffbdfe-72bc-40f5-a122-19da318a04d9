@@ -8,7 +8,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from .db import init_db
-from .schemas import BatchIn, BatchOut, BoxPathOut
+from .packaging import ExportError, PackageError, decode_package, export_package
+from .schemas import BatchIn, BatchOut, BoxPathOut, DecodeOut, ExportIn, PackageIn
 from .service import BatchError, ReplayConflict, RevisionConflict, get_box_path, submit_batch
 
 
@@ -62,6 +63,22 @@ def _handle_replay_conflict(_: Request, exc: ReplayConflict) -> JSONResponse:
     )
 
 
+@app.exception_handler(ExportError)
+def _handle_export_error(_: Request, exc: ExportError) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={"error": exc.code, "message": exc.message, **exc.extra},
+    )
+
+
+@app.exception_handler(PackageError)
+def _handle_package_error(_: Request, exc: PackageError) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={"error": exc.code, "message": exc.message, **exc.extra},
+    )
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -89,3 +106,21 @@ def box_path(box: str) -> dict:
             },
         )
     return result
+
+
+@app.post("/packages/export")
+def export(req: ExportIn) -> dict:
+    """按 1～20 个托盘码导出自描述交付包（JSON）。
+
+    任一托盘当前无箱则整次报错；同形箱根子树共用同一模板编号，
+    跨托盘、跨次导出稳定沿用。
+    """
+
+    return export_package(req)
+
+
+@app.post("/packages/decode", response_model=DecodeOut)
+def decode(pkg: PackageIn) -> dict:
+    """仅凭交付包内数据还原原托盘/箱/盒的直属关系（不查源库）。"""
+
+    return decode_package(pkg)

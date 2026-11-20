@@ -52,7 +52,7 @@ docker compose up --build
 pip install -r requirements.txt
 pip install pytest httpx
 TRACE_DB_PATH=./data/trace.db uvicorn app.main:app --reload
-pytest          # 17 个端到端测试
+pytest          # 端到端测试（扫描 17 个 + 包材核算 19 个）
 ```
 
 ## 接口
@@ -119,15 +119,103 @@ curl http://localhost:8000/boxes/B:box01
 
 ### `GET /health` 健康检查
 
+## 包材核算：模板化导出与解码
+
+### 判同规则
+
+以**箱（`C:`）为根**的子树，满足以下条件即视为同形，共用一份模板编号（`T:000001`…）：
+
+* 只看箱盒**层级**、**空箱**与各层**子项份数**；
+* **忽略实物码**与**同层顺序**（盒码不同、扫描先后不同不影响判同）；
+* 模板编号首次出现时落库，**跨托盘、跨次导出、进程重启后沿用同一编号**。
+
+### `POST /packages/export` 按托盘导出交付包
+
+请求体给 1～20 个**不同**托盘码；任一托盘当前无箱则**整次报错**（409），不写入任何模板。
+导出只读取同一已提交状态的包装层级，模板结构定义内嵌在包内，交付包完全自描述。
+
+```json
+{"pallets": ["P:p1", "P:p2"]}
+```
+
+响应（节选）：
+
+```json
+{
+  "format_version": "1.0",
+  "package_id": "PKG:9f2c…",
+  "exported_at": "2026-11-20T03:00:00.000Z",
+  "templates": [
+    {"template_id": "T:000001", "kind": "C",
+     "children": [{"kind": "B", "count": 2, "template_id": null}]}
+  ],
+  "pallets": [
+    {"pallet": "P:p1", "cases": [
+      {"template_id": "T:000001", "slots": [
+        {"path": [], "kind": "C", "code": "C:c1"},
+        {"path": [0], "kind": "B", "code": "B:b1"},
+        {"path": [1], "kind": "B", "code": "B:b2"}
+      ]}
+    ]}
+  ]
+}
+```
+
+* `templates`：去重后的同形模板（含嵌套箱模板），只描述角色与份数，无实物码；
+* `pallets[].cases[]`：每个箱根子树的**模板引用** + 逐槽位（`path` 为相对箱根的下标路径，
+  `[]` 是箱根）对应的**实物码**。
+
+| 状态码 | 场景 |
+| --- | --- |
+| 200 | 导出成功 |
+| 409 | 托盘无箱（`pallet_without_case`）、非托盘码/托盘码重复 |
+| 422 | 托盘数为空或超过 20 等 schema 校验失败 |
+
+### `POST /packages/decode` 仅凭包内数据解码
+
+**不访问源库**：源库更正扫描、甚至清空后，旧交付包仍能还原原托盘、箱、盒的**直属关系**。
+
+```bash
+curl -X POST http://localhost:8000/packages/decode \
+  -H 'Content-Type: application/json' -d @package.json
+```
+
+```json
+{
+  "package_id": "PKG:9f2c…",
+  "format_version": "1.0",
+  "pallets": [{"code": "P:p1", "kind": "P", "children": ["C:c1"]}],
+  "cases":   [{"code": "C:c1", "kind": "C", "children": ["B:b1", "B:b2"]}],
+  "boxes":   [{"code": "B:b1", "kind": "B", "children": []},
+              {"code": "B:b2", "kind": "B", "children": []}],
+  "physical_code_count": 3,
+  "node_count": 3
+}
+```
+
+整包拒绝（HTTP 422）的情形：
+
+| error 码 | 含义 |
+| --- | --- |
+| `missing_template` / `missing_template_reference` | 实例引用了包内不存在的模板、箱类子项缺模板引用 |
+| `template_cycle` | 模板互相引用成环 |
+| `duplicate_template` / `duplicate_pallet` / `duplicate_slot` | 模板编号、托盘段、槽位路径重复 |
+| `duplicate_physical_code` | 同一实物码在包内出现多次 |
+| `slot_count_mismatch` | 槽位实物码数量与模板声明不符 |
+| `slot_role_mismatch` | 槽位声明角色或编码前缀（`B:`/`C:`）与模板不符 |
+| `node_limit_exceeded` | 解码展开的包装节点数超过包内实物码数（防结构放大） |
+| `bad_pallet_code` / `bad_template_kind` / `bad_template_role` | 编码角色不合法 |
+
 ## 项目结构
 
 ```
 app/
-  main.py      FastAPI 路由与异常映射
-  service.py   修订合并、按序号重放、环/角色/双归属校验、路径计算
-  db.py        SQLite 连接、WAL、写锁、建表
-  schemas.py   Pydantic 请求/响应模型
-tests/         端到端测试（含并发、重启恢复、整批回滚）
+  main.py       FastAPI 路由与异常映射
+  service.py    修订合并、按序号重放、环/角色/双归属校验、路径计算
+  packaging.py  同形判同、模板编号落库、导出建包、自描述解码与整包校验
+  db.py         SQLite 连接、WAL、写锁、建表（含 templates 表）
+  schemas.py    Pydantic 请求/响应模型
+tests/          端到端测试（含并发、重启恢复、整批/整包回滚）
 Dockerfile
 docker-compose.yml
 ```

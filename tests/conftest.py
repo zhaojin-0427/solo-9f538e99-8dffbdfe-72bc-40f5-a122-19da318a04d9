@@ -26,6 +26,7 @@ def _clean_tables():
     try:
         conn.execute("DELETE FROM edges")
         conn.execute("DELETE FROM scans")
+        conn.execute("DELETE FROM templates")
         conn.commit()
     finally:
         conn.close()

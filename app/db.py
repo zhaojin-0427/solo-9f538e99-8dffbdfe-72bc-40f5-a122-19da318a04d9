@@ -46,6 +46,14 @@ CREATE TABLE IF NOT EXISTS edges (
     child  TEXT PRIMARY KEY,              -- 任一时点一个子项只能有一个父项
     parent TEXT NOT NULL
 );
+
+-- 同形箱根子树模板：shape_hash 为结构判同键，template_id 跨托盘/跨次导出稳定沿用。
+CREATE TABLE IF NOT EXISTS templates (
+    template_id TEXT PRIMARY KEY,         -- 形如 T:000001，按首次出现顺序分配
+    shape_hash  TEXT NOT NULL UNIQUE,     -- 规范化结构指纹（忽略实物码与同层顺序）
+    shape_json  TEXT NOT NULL,            -- 结构定义（角色 + 子项份数，无实物码）
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 """
 
 
